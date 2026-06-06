@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: 2d-fighter-server
+    env: node
+    plan: free
+    region: singapore
+    rootDir: .
+    buildCommand: npm install && npm run build:shared && npm run build -w @game/server
+    startCommand: node packages/server/dist/index.js
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: 20.12.1
+      - key: CLIENT_ORIGIN
+        sync: false

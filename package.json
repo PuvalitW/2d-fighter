@@ -1,0 +1,17 @@
+{
+  "name": "2d-fighter",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build:shared": "npm run build -w @game/shared",
+    "dev:server": "npm run dev -w @game/server",
+    "dev:client": "npm run dev -w @game/client",
+    "build": "npm run build -w @game/shared && npm run build -w @game/server && npm run build -w @game/client"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.4"
+  }
+}
