@@ -2,6 +2,7 @@ import Phaser from 'phaser';
 import type { CharacterId, RoomState } from '@game/shared';
 import { CHARACTERS } from '@game/shared';
 import { getSocket } from '../network/socket';
+import { HumanSprite } from '../entities/HumanSprite';
 
 export class LobbyScene extends Phaser.Scene {
   private codeText!: Phaser.GameObjects.Text;
@@ -10,13 +11,35 @@ export class LobbyScene extends Phaser.Scene {
   private selectionText!: Phaser.GameObjects.Text;
   private selected: CharacterId | null = null;
   private state: RoomState | null = null;
+  private previews: HumanSprite[] = [];
 
   constructor() {
     super({ key: 'LobbyScene' });
   }
 
+  update(_t: number, dt: number): void {
+    // gentle idle wobble on preview sprites
+    for (const p of this.previews) {
+      p.updateAnim(
+        {
+          facing: 1,
+          vx: 0,
+          vy: 0,
+          onGround: true,
+          attacking: false,
+          blocking: false,
+          dashing: false,
+          shielded: false,
+        },
+        dt
+      );
+    }
+  }
+
   create(): void {
     const W = this.scale.width;
+    this.previews = [];
+    this.selected = null;
 
     this.add
       .text(W / 2, 60, 'LOBBY', { fontSize: '40px', color: '#ffffff', fontStyle: 'bold' })
@@ -42,8 +65,23 @@ export class LobbyScene extends Phaser.Scene {
         .rectangle(x, y, w, h, 0x1d2230, 1)
         .setStrokeStyle(2, 0x2c3346)
         .setInteractive({ useHandCursor: true });
-      const swatch = this.add.rectangle(x, y - 50, 80, 100, def.color);
-      void swatch;
+
+      // floor under preview
+      this.add.rectangle(x, y + 8, w - 40, 4, 0x4a5266);
+
+      // animated preview sprite
+      const preview = new HumanSprite(this, x, y - 12, id, null);
+      preview.setScale(2.0);
+      this.previews.push(preview);
+      this.tweens.add({
+        targets: preview,
+        y: y - 18,
+        yoyo: true,
+        repeat: -1,
+        duration: 900,
+        ease: 'Sine.InOut',
+      });
+
       this.add.text(x, y + 18, def.name, { fontSize: '22px', color: '#fff' }).setOrigin(0.5);
       this.add
         .text(x, y + 50, `HP ${def.hp}   SPD ${def.speed}   JMP ${def.jump}`, {

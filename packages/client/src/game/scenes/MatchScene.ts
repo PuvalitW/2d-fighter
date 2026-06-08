@@ -1,6 +1,7 @@
 import Phaser from 'phaser';
 import type {
   ButtonState,
+  CharacterId,
   MatchSnapshot,
   PlayerSnapshot,
   ProjectileSnapshot,
@@ -10,23 +11,26 @@ import type {
 } from '@game/shared';
 import {
   ARENA,
-  CHARACTERS,
   PLAYER_HALF_H,
   PLAYER_HALF_W,
   SKILLS,
   TICK_RATE,
-  WEAPONS,
 } from '@game/shared';
 import { getSocket } from '../network/socket';
+import { HumanSprite } from '../entities/HumanSprite';
 
 interface PlayerView {
-  body: Phaser.GameObjects.Rectangle;
-  weaponGfx: Phaser.GameObjects.Rectangle;
-  shieldRing: Phaser.GameObjects.Arc;
+  sprite: HumanSprite;
+  character: CharacterId;
+  weapon: WeaponId | null;
   nameTag: Phaser.GameObjects.Text;
   hpBg: Phaser.GameObjects.Rectangle;
   hpFill: Phaser.GameObjects.Rectangle;
   hpText: Phaser.GameObjects.Text;
+  // last frame state (for animation interpolation)
+  lastDrawnX: number;
+  lastDrawnY: number;
+  lastAttackUntil: number;
 }
 
 interface ProjectileView {
@@ -47,18 +51,15 @@ export class MatchScene extends Phaser.Scene {
   private players = new Map<string, PlayerView>();
   private projectiles = new Map<string, ProjectileView>();
   private buttons: ButtonState = emptyButtons();
-  private lastSentButtons: ButtonState | null = null;
   private snap: MatchSnapshot | null = null;
   private prevSnap: MatchSnapshot | null = null;
   private interpProgress = 0;
-  private hitTickerEvents: Array<{ x: number; y: number; amount: number; tween: Phaser.Tweens.Tween }> = [];
   private myId = '';
   private cdText!: Phaser.GameObjects.Text;
   private weaponLabel!: Phaser.GameObjects.Text;
   private skillLabels!: Phaser.GameObjects.Text;
-  private myWeapon: WeaponId | null = null;
-  private mySkills: [SkillId | null, SkillId | null] = [null, null];
-  private playerLoadout: Map<string, WeaponId | null> = new Map();
+  private playerInfo: Map<string, { character: CharacterId; weapon: WeaponId | null; name: string; slot: 0 | 1 }> =
+    new Map();
   private heartbeat = 0;
   private inputTick = 0;
 
@@ -72,7 +73,6 @@ export class MatchScene extends Phaser.Scene {
     this.snap = null;
     this.prevSnap = null;
     this.buttons = emptyButtons();
-    this.lastSentButtons = null;
     this.myId = window.sessionStorage.getItem('fighter:playerId') ?? '';
 
     this.drawArena();
@@ -96,14 +96,30 @@ export class MatchScene extends Phaser.Scene {
   }
 
   private drawArena(): void {
-    // ground
+    // sky gradient bands
+    this.add.rectangle(ARENA.width / 2, 150, ARENA.width, 300, 0x1f2735);
+    this.add.rectangle(ARENA.width / 2, 420, ARENA.width, 240, 0x252e3e);
+
+    // distant mountains silhouette (just 2 triangles)
+    const g = this.add.graphics();
+    g.fillStyle(0x1a2330, 1);
+    g.fillTriangle(120, 460, 320, 220, 540, 460);
+    g.fillTriangle(720, 460, 920, 260, 1180, 460);
+
+    // ground band
     this.add.rectangle(ARENA.width / 2, ARENA.groundY + 40, ARENA.width, 80, 0x2c3346);
-    this.add.rectangle(ARENA.width / 2, ARENA.groundY, ARENA.width, 4, 0x4a5266);
-    // platforms
+    this.add.rectangle(ARENA.width / 2, ARENA.groundY, ARENA.width, 4, 0x6c7488);
+
+    // platforms with shadow & highlight
     for (const p of ARENA.platforms) {
+      // shadow
+      this.add.rectangle(p.x + p.w / 2, p.y + p.h / 2 + 4, p.w, p.h, 0x000000, 0.3);
+      // body
       this.add
         .rectangle(p.x + p.w / 2, p.y + p.h / 2, p.w, p.h, 0x4a5266)
         .setStrokeStyle(1, 0x6b7488);
+      // top highlight
+      this.add.rectangle(p.x + p.w / 2, p.y + 1, p.w, 2, 0x8a93a7);
     }
   }
 
@@ -121,7 +137,6 @@ export class MatchScene extends Phaser.Scene {
     const socket = getSocket();
     this.inputTick += 1;
     socket.emit('input:state', { tick: this.inputTick, buttons: { ...this.buttons } });
-    this.lastSentButtons = { ...this.buttons };
   }
 
   private onRoomState(state: RoomState): void {
@@ -129,22 +144,31 @@ export class MatchScene extends Phaser.Scene {
     if (state.phase === 'shop') this.scene.start('ShopScene');
     if (state.phase === 'lobby') this.scene.start('LobbyScene');
 
-    // build name + loadout lookup
     for (const p of state.players) {
-      this.playerLoadout.set(p.id, p.loadout.weapon);
-      const me = p.id === this.myId;
-      if (me) {
-        this.myWeapon = p.loadout.weapon;
-        this.mySkills = p.loadout.skills;
+      const character = (p.character ?? (p.slot === 0 ? 'brawler' : 'ranger')) as CharacterId;
+      const prev = this.playerInfo.get(p.id);
+      this.playerInfo.set(p.id, { character, weapon: p.loadout.weapon, name: p.name, slot: p.slot });
+
+      // if existing view's character/weapon changed, recreate sprite
+      const view = this.players.get(p.id);
+      if (view && (view.character !== character || view.weapon !== p.loadout.weapon)) {
+        view.sprite.destroy();
+        const fresh = new HumanSprite(this, view.sprite.x, view.sprite.y, character, p.loadout.weapon);
+        view.sprite = fresh;
+        view.character = character;
+        view.weapon = p.loadout.weapon;
+      }
+      if (view) {
+        view.nameTag.setText(p.name);
+      }
+
+      if (p.id === this.myId) {
         this.weaponLabel.setText(`อาวุธ: ${p.loadout.weapon ?? '-'}`);
         const s1 = p.loadout.skills[0] ? SKILLS[p.loadout.skills[0]].name : '-';
         const s2 = p.loadout.skills[1] ? SKILLS[p.loadout.skills[1]].name : '-';
         this.skillLabels.setText(`สกิล:  [K] ${s1}   [L] ${s2}`);
       }
-      const view = this.players.get(p.id);
-      if (view) {
-        view.nameTag.setText(p.name);
-      }
+      void prev;
     }
   }
 
@@ -153,14 +177,12 @@ export class MatchScene extends Phaser.Scene {
     this.snap = snap;
     this.interpProgress = 0;
 
-    // ensure view objects exist
     for (const ps of snap.players) {
       if (!this.players.has(ps.id)) {
         this.players.set(ps.id, this.createPlayerView(ps));
       }
     }
 
-    // ensure projectile views
     const seenProj = new Set<string>();
     for (const pr of snap.projectiles) {
       seenProj.add(pr.id);
@@ -168,7 +190,6 @@ export class MatchScene extends Phaser.Scene {
         this.projectiles.set(pr.id, this.createProjectileView(pr));
       }
     }
-    // cleanup vanished projectiles
     for (const [id, view] of this.projectiles) {
       if (!seenProj.has(id)) {
         view.gfx.destroy();
@@ -178,33 +199,46 @@ export class MatchScene extends Phaser.Scene {
   }
 
   private createPlayerView(ps: PlayerSnapshot): PlayerView {
-    const def = ps.slot === 0 ? CHARACTERS.brawler : CHARACTERS.ranger;
-    // use color from snapshot character if we knew it; fallback to slot color
-    const color = ps.slot === 0 ? 0xff5252 : 0x4dd0e1;
-    const body = this.add.rectangle(ps.x, ps.y, PLAYER_HALF_W * 2, PLAYER_HALF_H * 2, color);
-    body.setStrokeStyle(2, 0x000000);
-    const weaponGfx = this.add.rectangle(ps.x, ps.y, 30, 6, 0xffffff);
-    const shieldRing = this.add.circle(ps.x, ps.y, 44, 0x7cc4ff, 0.0).setStrokeStyle(3, 0x7cc4ff);
-    shieldRing.setVisible(false);
+    const info = this.playerInfo.get(ps.id);
+    const character: CharacterId = info?.character ?? (ps.slot === 0 ? 'brawler' : 'ranger');
+    const weapon: WeaponId | null = info?.weapon ?? ps.weapon ?? null;
+
+    const sprite = new HumanSprite(this, ps.x, ps.y, character, weapon);
 
     const nameTag = this.add
-      .text(ps.x, ps.y - PLAYER_HALF_H - 22, `P${ps.slot + 1}`, {
+      .text(ps.x, ps.y - PLAYER_HALF_H - 22, info?.name ?? `P${ps.slot + 1}`, {
         fontSize: '13px',
         color: '#ffffff',
+        fontStyle: 'bold',
+        stroke: '#000',
+        strokeThickness: 3,
       })
       .setOrigin(0.5);
 
-    const hpBg = this.add.rectangle(ps.x, ps.y - PLAYER_HALF_H - 42, 70, 8, 0x000000, 0.6);
-    const hpFill = this.add.rectangle(ps.x - 35, ps.y - PLAYER_HALF_H - 42, 70, 8, 0x39c46a).setOrigin(0, 0.5);
+    const hpBg = this.add.rectangle(ps.x, ps.y - PLAYER_HALF_H - 42, 74, 9, 0x000000, 0.7);
+    hpBg.setStrokeStyle(1, 0x222);
+    const hpFill = this.add
+      .rectangle(ps.x - 36, ps.y - PLAYER_HALF_H - 42, 72, 7, 0x39c46a)
+      .setOrigin(0, 0.5);
     const hpText = this.add
-      .text(ps.x, ps.y - PLAYER_HALF_H - 56, `${ps.hp}/${ps.maxHp}`, {
+      .text(ps.x, ps.y - PLAYER_HALF_H - 58, `${ps.hp}/${ps.maxHp}`, {
         fontSize: '11px',
         color: '#fff',
       })
       .setOrigin(0.5);
-    void def;
 
-    return { body, weaponGfx, shieldRing, nameTag, hpBg, hpFill, hpText };
+    return {
+      sprite,
+      character,
+      weapon,
+      nameTag,
+      hpBg,
+      hpFill,
+      hpText,
+      lastDrawnX: ps.x,
+      lastDrawnY: ps.y,
+      lastAttackUntil: 0,
+    };
   }
 
   private createProjectileView(pr: ProjectileSnapshot): ProjectileView {
@@ -212,7 +246,7 @@ export class MatchScene extends Phaser.Scene {
       const gfx = this.add.circle(pr.x, pr.y, 12, 0xff6b35).setStrokeStyle(2, 0xffd166);
       return { gfx };
     }
-    const gfx = this.add.rectangle(pr.x, pr.y, 24, 4, 0xeeeeee);
+    const gfx = this.add.rectangle(pr.x, pr.y, 26, 4, 0xeeeeee);
     return { gfx };
   }
 
@@ -220,47 +254,60 @@ export class MatchScene extends Phaser.Scene {
     if (ev.type === 'hit') {
       const t = this.add
         .text(ev.x, ev.y - 50, `-${ev.amount}`, {
-          fontSize: '20px',
+          fontSize: '22px',
           color: '#ff5252',
           fontStyle: 'bold',
+          stroke: '#000',
+          strokeThickness: 4,
         })
         .setOrigin(0.5);
-      const tween = this.tweens.add({
+      this.tweens.add({
         targets: t,
         y: ev.y - 110,
         alpha: 0,
         duration: 600,
         onComplete: () => t.destroy(),
       });
-      void tween;
+
+      // spark burst at the hit point
+      const sparkColor = 0xffd166;
+      for (let i = 0; i < 6; i++) {
+        const s = this.add.circle(ev.x, ev.y, 3, sparkColor);
+        const ang = (Math.PI * 2 * i) / 6 + Math.random() * 0.3;
+        this.tweens.add({
+          targets: s,
+          x: ev.x + Math.cos(ang) * 30,
+          y: ev.y + Math.sin(ang) * 30,
+          alpha: 0,
+          duration: 400,
+          onComplete: () => s.destroy(),
+        });
+      }
     } else if (ev.type === 'attack') {
       const view = this.players.get(ev.ownerId);
       if (view) {
-        const flash = view.weaponGfx;
-        const orig = flash.fillColor;
-        flash.fillColor = 0xffd166;
-        this.time.delayedCall(100, () => {
-          flash.fillColor = orig;
-        });
+        view.lastAttackUntil = this.time.now + 180;
       }
     } else if (ev.type === 'death') {
       const view = this.players.get(ev.targetId);
-      if (view) view.body.fillColor = 0x555;
+      if (view) {
+        view.sprite.setAlpha(0.5);
+        view.sprite.setAngle(20);
+      }
     }
   }
 
   update(_t: number, dt: number): void {
-    // heartbeat: resend input every 100ms in case packet lost
+    // input heartbeat: resend every 100ms
     this.heartbeat += dt;
     if (this.heartbeat >= 100) {
       this.heartbeat = 0;
-      if (this.lastSentButtons === null) this.sendInputs();
-      else this.sendInputs();
+      this.sendInputs();
     }
 
     if (!this.snap) return;
 
-    // interpolate between prev and current snapshot
+    // interpolate
     const lerpDur = 1000 / TICK_RATE;
     this.interpProgress = Math.min(1, this.interpProgress + dt / lerpDur);
     const a = this.interpProgress;
@@ -271,30 +318,36 @@ export class MatchScene extends Phaser.Scene {
       const prev = this.prevSnap?.players.find((x) => x.id === ps.id);
       const x = prev ? prev.x + (ps.x - prev.x) * a : ps.x;
       const y = prev ? prev.y + (ps.y - prev.y) * a : ps.y;
-      view.body.setPosition(x, y);
 
-      // weapon: in front of body in facing direction
-      const offX = ps.facing * (PLAYER_HALF_W + 16);
-      const offY = ps.attacking ? -4 : 6;
-      view.weaponGfx.setPosition(x + offX, y + offY);
-      view.weaponGfx.setSize(ps.attacking ? 36 : 28, 6);
-      view.weaponGfx.fillColor = ps.attacking ? 0xffd166 : 0xeeeeee;
+      view.sprite.setPosition(x, y);
 
-      view.shieldRing.setPosition(x, y);
-      view.shieldRing.setVisible(ps.shielded);
+      // derive on-ground status from vy ~ 0 and y near ground OR platform
+      const onGround = Math.abs(ps.vy) < 20;
+
+      view.sprite.updateAnim(
+        {
+          facing: ps.facing,
+          vx: ps.vx,
+          vy: ps.vy,
+          onGround,
+          attacking: ps.attacking || this.time.now < view.lastAttackUntil,
+          blocking: ps.blocking,
+          dashing: ps.dashing,
+          shielded: ps.shielded,
+        },
+        dt
+      );
 
       view.nameTag.setPosition(x, y - PLAYER_HALF_H - 22);
       view.hpBg.setPosition(x, y - PLAYER_HALF_H - 42);
-      view.hpFill.setPosition(x - 35, y - PLAYER_HALF_H - 42);
+      view.hpFill.setPosition(x - 36, y - PLAYER_HALF_H - 42);
       const ratio = Math.max(0, ps.hp / ps.maxHp);
-      view.hpFill.width = 70 * ratio;
-      view.hpFill.fillColor = ratio > 0.5 ? 0x39c46a : ratio > 0.2 ? 0xffd166 : 0xff5252;
-      view.hpText.setPosition(x, y - PLAYER_HALF_H - 56).setText(`${ps.hp}/${ps.maxHp}`);
+      view.hpFill.width = 72 * ratio;
+      view.hpFill.fillColor = ratio > 0.5 ? 0x39c46a : ratio > 0.25 ? 0xffd166 : 0xff5252;
+      view.hpText.setPosition(x, y - PLAYER_HALF_H - 58).setText(`${ps.hp}/${ps.maxHp}`);
 
-      // body tint when dashing
-      if (ps.dashing) view.body.fillColor = 0xffffff;
-      else if (ps.blocking) view.body.fillColor = 0x888888;
-      else view.body.fillColor = ps.slot === 0 ? 0xff5252 : 0x4dd0e1;
+      view.lastDrawnX = x;
+      view.lastDrawnY = y;
     }
 
     for (const pr of this.snap.projectiles) {
@@ -303,7 +356,7 @@ export class MatchScene extends Phaser.Scene {
       view.gfx.setPosition(pr.x, pr.y);
     }
 
-    // cooldown HUD for me
+    // cooldown HUD
     const me = this.snap.players.find((p) => p.id === this.myId);
     if (me) {
       const fmt = (ms: number) => (ms > 0 ? `${(ms / 1000).toFixed(1)}s` : 'พร้อม');

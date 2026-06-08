@@ -6,9 +6,11 @@ export const ARENA = {
   height: 720,
   groundY: 640,
   platforms: [
-    { x: 220, y: 480, w: 240, h: 16 },
-    { x: 820, y: 480, w: 240, h: 16 },
-    { x: 520, y: 340, w: 240, h: 16 },
+    // sides: 130px above ground (Brawler can reach with single jump)
+    { x: 200, y: 510, w: 260, h: 16 },
+    { x: 820, y: 510, w: 260, h: 16 },
+    // middle: 240px above ground (reachable by Ranger from ground, or by Brawler hopping from side platform)
+    { x: 510, y: 400, w: 260, h: 16 },
   ],
 } as const;
 
@@ -40,7 +42,8 @@ export const CHARACTERS: Record<CharacterId, CharacterDef> = {
     name: 'Brawler',
     hp: 120,
     speed: 180,
-    jump: 480,
+    // 720²/(2*1400) ≈ 185px — reaches side platforms (130px), needs double-hop for middle (240px)
+    jump: 720,
     color: 0xff5252,
     desc: 'เลือดเยอะ ตัวใหญ่ ช้ากว่า',
   },
@@ -49,7 +52,8 @@ export const CHARACTERS: Record<CharacterId, CharacterDef> = {
     name: 'Ranger',
     hp: 90,
     speed: 220,
-    jump: 520,
+    // 870²/(2*1400) ≈ 270px — reaches middle platform (240px) directly from ground
+    jump: 870,
     color: 0x4dd0e1,
     desc: 'คล่องตัว เลือดน้อย กระโดดสูง',
   },
