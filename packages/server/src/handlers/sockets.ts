@@ -24,6 +24,25 @@ export function registerSocketHandlers(io: IO, socket: S, rooms: RoomManager): v
     cb({ ok: true, code: room.code, playerId });
   });
 
+  socket.on('room:practice', ({ name, difficulty }, cb) => {
+    const room = rooms.createRoom();
+    if (difficulty === 'easy' || difficulty === 'normal' || difficulty === 'hard') {
+      room.botDifficulty = difficulty;
+    }
+    const playerId = randomUUID();
+    const human = room.addMember(socket.id, name, playerId);
+    if (!human) {
+      cb({ ok: true, code: room.code, playerId });
+      return;
+    }
+    const botId = randomUUID();
+    room.addBot(botId, 'BOT');
+    socket.join(room.code);
+    rooms.trackSocket(socket.id, room.code);
+    room.broadcastState();
+    cb({ ok: true, code: room.code, playerId });
+  });
+
   socket.on('room:join', ({ code, name }, cb) => {
     const room = rooms.joinRoom(code);
     if (!room) {

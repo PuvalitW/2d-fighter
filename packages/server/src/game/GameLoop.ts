@@ -19,6 +19,7 @@ import {
 } from '@game/shared';
 import { buttonPressed, Player } from './Player.js';
 import { Projectile } from './Projectile.js';
+import { Bot, type BotDifficulty } from './Bot.js';
 import { meleeHit, projectileHit } from './combat.js';
 import { stepPhysics } from './World.js';
 
@@ -33,17 +34,23 @@ export class GameLoop {
   private projectileSeq = 0;
   private startedAt = 0;
   private running = false;
+  private bots: Bot[] = [];
 
   constructor(
     private io: IO,
     private roomCode: string,
     private players: Player[],
-    private onEnd: (winnerId: string | null) => void
+    private onEnd: (winnerId: string | null) => void,
+    private botDifficulty: BotDifficulty = 'normal'
   ) {}
 
   start(): void {
     this.startedAt = Date.now();
     this.running = true;
+    // Spawn AI controllers for every bot-flagged player
+    this.bots = this.players
+      .filter((p) => p.isBot)
+      .map((p) => new Bot(p, this.botDifficulty));
     this.timer = setInterval(() => this.step(), TICK_MS);
   }
 
@@ -65,6 +72,15 @@ export class GameLoop {
     this.tick += 1;
 
     const events: MatchEvent[] = [];
+
+    // bots decide BEFORE we read inputs for the tick
+    if (this.bots.length) {
+      const now = Date.now();
+      for (const bot of this.bots) {
+        const enemy = this.players.find((p) => p !== bot.player && p.isAlive()) ?? null;
+        bot.think(enemy, now);
+      }
+    }
 
     // tick down timers + step physics
     for (const p of this.players) {

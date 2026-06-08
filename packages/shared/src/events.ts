@@ -43,6 +43,10 @@ export interface ClientToServerEvents {
     payload: { name: string },
     cb: (ack: RoomCreateAck) => void
   ) => void;
+  'room:practice': (
+    payload: { name: string; difficulty?: 'easy' | 'normal' | 'hard' },
+    cb: (ack: RoomCreateAck) => void
+  ) => void;
   'room:join': (
     payload: { code: string; name: string },
     cb: (ack: RoomJoinAck) => void

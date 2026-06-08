@@ -50,7 +50,8 @@ export class Player {
     public readonly slot: 0 | 1,
     character: CharacterId,
     public readonly weapon: WeaponId,
-    public readonly skills: [SkillId | null, SkillId | null]
+    public readonly skills: [SkillId | null, SkillId | null],
+    public readonly isBot: boolean = false
   ) {
     const def = CHARACTERS[character];
     this.maxHp = def.hp;
